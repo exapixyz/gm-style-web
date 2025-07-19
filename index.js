@@ -77,6 +77,7 @@ app.post('/api/upload', express.raw({
 });
 
 // API Endpoint 2: Convert to Ghibli style with proper content type handling
+
 app.post('/api/convert-to-ghibli', async (req, res) => {
   try {
     const { imageUrl } = req.body;
@@ -85,55 +86,61 @@ app.post('/api/convert-to-ghibli', async (req, res) => {
       return res.status(400).json({ error: 'imageUrl is required' });
     }
 
-    // Call Exonity API
+    // 1. Call Exonity API
     const exonityUrl = `https://exonity.tech/api/ghibli-converter?image_url=${encodeURIComponent(imageUrl)}&prompt=Ghibli%20Studio%20style%2C%20Charming%20hand-drawn%20anime-style%20illustration&seed=42&style=Ghibli&enable_hr=false&hr_scale=1`;
     
-    const response = await axios.get(exonityUrl, { 
-      responseType: 'arraybuffer',
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    });
-
-    // Detect the converted image type
-    const fileType = await FileType.fromBuffer(response.data);
-    if (!fileType || !fileType.mime.startsWith('image/')) {
-      throw new Error('Received invalid image data from converter');
+    const response = await axios.get(exonityUrl, { timeout: 30000 });
+    
+    if (!response.data.status || !response.data.result) {
+      throw new Error('Invalid response from Exonity API');
     }
 
-    const bufferStream = new stream.PassThrough();
-    bufferStream.end(response.data);
+    const convertedUrl = response.data.result;
 
+    // 2. Download the converted image
+    const imageResponse = await axios.get(convertedUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000
+    });
+
+    // 3. Detect file type
+    const fileType = await FileType.fromBuffer(imageResponse.data);
+    if (!fileType || !fileType.mime.startsWith('image/')) {
+      throw new Error('Invalid image data from converter');
+    }
+
+    // 4. Upload to Feng's storage
     const formData = new FormData();
-    formData.append('file', bufferStream, {
+    formData.append('file', imageResponse.data, {
       filename: `ghibli-${Date.now()}.${fileType.ext}`,
       contentType: fileType.mime
     });
 
     const uploadResponse = await axios.post(
-      'https://temp.fenghuochatbot.site/api/upload', 
+      'https://temp.fenghuochatbot.site/api/upload',
       formData,
       {
         headers: formData.getHeaders(),
-        maxContentLength: Infinity,
         maxBodyLength: Infinity
       }
     );
 
+    // 5. Return Feng's URL
     res.json({
       success: true,
-      message: 'Image successfully converted',
-      imageUrl: uploadResponse.data.fullUrl,
-      fileType: fileType.mime
+      message: 'Conversion successful',
+      imageUrl: uploadResponse.data.fullUrl
     });
+
   } catch (error) {
     console.error('Conversion error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to convert image',
-      details: error.message 
+      details: error.message,
+      step: error.step || 'unknown' 
     });
   }
 });
-
 // Error handling
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
